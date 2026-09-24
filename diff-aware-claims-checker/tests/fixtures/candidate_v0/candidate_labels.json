@@ -1,0 +1,94 @@
+{
+  "fixture_id": "synthetic_core_v0",
+  "status": "candidate",
+  "synthetic": true,
+  "description": "Controlled synthetic cases for testing version-to-version claim matching and review classification. These labels should not be treated as a final gold set until human reviewed.",
+  "cases": [
+    {
+      "case_id": "CAND-001",
+      "v1_text": "Program Atlas enrolled 1,000 households.",
+      "v2_text": "Program Atlas enrolled 1,000 households.",
+      "match_relation": "SAME",
+      "review_trigger": "NONE",
+      "expected_action": "SUPPRESS",
+      "rule_basis": "specification",
+      "reason": "The claim text is unchanged."
+    },
+    {
+      "case_id": "CAND-002",
+      "v1_text": "Field workers completed two days of training.",
+      "v2_text": "Field workers completed two days of training.",
+      "match_relation": "MOVED",
+      "review_trigger": "NONE",
+      "expected_action": "SUPPRESS",
+      "rule_basis": "specification",
+      "reason": "The same claim moved from Background to Results without a substantive text change."
+    },
+    {
+      "case_id": "CAND-003",
+      "v1_text": "The survey was conducted in June.",
+      "v2_text": "In June, the survey was conducted.",
+      "match_relation": "SAME",
+      "review_trigger": "STYLISTIC",
+      "expected_action": "SUPPRESS",
+      "rule_basis": "candidate_human_review",
+      "reason": "The wording and sentence order changed, but the intended substantive claim is unchanged."
+    },
+    {
+      "case_id": "CAND-004",
+      "v1_text": "Treatment uptake increased by 20 percentage points.",
+      "v2_text": "Treatment uptake increased by 25 percentage points.",
+      "match_relation": "SAME",
+      "review_trigger": "MEANINGFUL_CHANGE",
+      "expected_action": "RECHECK",
+      "rule_basis": "specification",
+      "reason": "The reported numeric result changed from 20 to 25 percentage points."
+    },
+    {
+      "case_id": "CAND-005",
+      "v1_text": "The pilot included three districts.",
+      "v2_text": null,
+      "match_relation": "DELETED",
+      "review_trigger": null,
+      "expected_action": "REMOVE_FROM_ACTIVE_REVIEW",
+      "rule_basis": "specification",
+      "reason": "The claim was removed in V2, so its audit history should be preserved while it is removed from active review."
+    },
+    {
+      "case_id": "CAND-006",
+      "v1_text": null,
+      "v2_text": "Follow-up lasted six months.",
+      "match_relation": "ADDED",
+      "review_trigger": null,
+      "expected_action": "RECHECK",
+      "rule_basis": "specification",
+      "reason": "The claim is new in V2 and therefore requires verification."
+    },
+    {
+      "case_id": "CAND-007",
+      "v1_text": "The program was inexpensive and reduced processing time.",
+      "v2_text": [
+        "The program was inexpensive.",
+        "The program reduced processing time."
+      ],
+      "match_relation": "SPLIT",
+      "review_trigger": null,
+      "expected_action": null,
+      "rule_basis": "human_judgment_required",
+      "reason": "The structural relation is a split. The review trigger is intentionally left unresolved until a human determines whether meaning or evidence support changed."
+    },
+    {
+      "case_id": "CAND-008",
+      "v1_text": [
+        "The reporting tool was easy to use.",
+        "The reporting tool reduced data-entry time."
+      ],
+      "v2_text": "The reporting tool was easy to use and reduced data-entry time.",
+      "match_relation": "MERGED",
+      "review_trigger": null,
+      "expected_action": null,
+      "rule_basis": "human_judgment_required",
+      "reason": "The structural relation is a merge. The review trigger is intentionally left unresolved until a human determines whether meaning or evidence support changed."
+    }
+  ]
+}
