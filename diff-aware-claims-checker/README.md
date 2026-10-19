@@ -1,9 +1,12 @@
 # Diff-Aware Claims Checker Demo
 
-- **Date:** 2026-09-29
-- **Purpose:** Demonstrate deterministic version-to-version claim review routing.
-- **Inputs:** Two UTF-8 manuscripts and optional JSON dependency maps.
-- **Status:** Minimal working demo; persistent multi-version identity is not yet done.
+- **Author:** Dongwei Liu
+- **Date:** 2026-10-19
+- **Intent:** Demonstrate deterministic version-to-version claim review routing without presenting routing or evidence-label extraction as fact verification.
+- **Inputs:** Two UTF-8 Markdown/plain-text manuscript versions and optional JSON dependency maps or independently established heading hints.
+- **Assumptions:** Users have permission to process the inputs; paragraph-level derived text preserves source provenance; ambiguous relationships receive human review.
+- **Status / Not Yet Done:** Working command-line prototype. Direct DOCX/PDF import, Zotero, AI evidence verification, durable multi-version claim identity, reviewer persistence, and formal sign-off are not implemented.
+- **Documentation assistance:** Revised with OpenAI Codex (GPT-5; exact deployment identifier not exposed) on 2026-10-19; maintainer review remains required.
 
 ## Genre
 
@@ -23,7 +26,7 @@ From the `diff-aware-claims-checker/` project directory:
 python ./claims_checker.py ./tests/fixtures/candidate_v0/v1.md ./tests/fixtures/candidate_v0/v2.md
 ```
 
-**Expected output**
+**Expected output (abridged)**
 
 ```text
 RECHECK
@@ -42,7 +45,9 @@ DELETED / ARCHIVED
 - The pilot included three districts. — deleted
 ```
 
-Add `--json-out report.json` to save the same records as JSON.
+Add `--json-out report.json` to save the same records as JSON. The exact current fixture output also includes conservative heading-scope review records and one-sided ambiguity components; the abridged block above shows the four output sections rather than every record.
+
+For the complete reviewer workflow, including document preparation, evidence review, revised-document comparison, Zotero/AI boundaries, and privacy-preserving sharing, see [Reviewer Interface User Manual](./docs/reviewer_interface_user_manual.md).
 
 ## Dependency-Change Demo
 
@@ -102,13 +107,16 @@ python -B -m unittest discover -s .\diff-aware-claims-checker\tests -p "test_*.p
 
 The tests cover specification-backed labels, conservative ambiguity handling, dependency overrides, dependency ordering, human-readable output, and JSON output.
 
-Validation on 2026-10-19: 31 checker tests, 10 repository validation-tool tests,
-and 7 repository documentation tests passed. The seven changed source/test/docs
-files passed MVP lint with no errors or warnings; the README strict check and
-synthetic dependency-change CLI demo passed. The repository verification wrapper
-found no common secret pattern with UTF-8 enabled; its optional pytest run was
-skipped because pytest was unavailable. Private UI checks are separate from
-these publicly reproducible checker regressions.
+Current-branch verification on 2026-10-19 reran all 31 checker tests successfully
+and reran the synthetic CLI example successfully. The branch's recorded validation
+also reports 10 repository validation-tool tests and 7 repository documentation
+tests passed; seven then-changed source/test/docs files passed MVP lint with no
+errors or warnings; the README strict check and synthetic dependency-change CLI
+demo passed. The repository verification wrapper recorded no common secret
+pattern with UTF-8 enabled and skipped its optional pytest run because pytest was
+unavailable. Those additional recorded checks were not all rerun during the
+current documentation revision. Private UI checks are separate from these
+publicly reproducible checker regressions.
 
 ## Environment
 
@@ -140,6 +148,14 @@ evidence mentions.
 ## Reproducibility
 
 For identical manuscripts and dependency JSON, the checker produces deterministic IDs, classifications, ordering, and reasons. Dependency arrays are canonicalized so that JSON list order alone does not reopen a claim.
+
+## Assumptions
+
+- Users have authorization to process both manuscript versions and any evidence materials.
+- DOCX/PDF sources are converted locally into provenance-linked paragraph text before this CLI is run; the public checker does not perform that conversion.
+- Exact, numeric, or structural routing is a prioritization aid. It is not a semantic or factual judgment.
+- Dependency metadata supplied by a user is independently established; automatically extracted mentions never substitute for that metadata.
+- Human reviewers preserve unresolved ambiguity rather than forcing a one-to-one alignment.
 
 ## Limitations and Risks
 
@@ -226,6 +242,15 @@ included in this public deliverable. The public CLI and synthetic demo run
 without them. Zotero integration, AI-based evidence verification, durable
 semantic claim identity, and reviewer sign-off are not implemented.
 
+## Not Included
+
+- Private manuscripts, manuscript-derived text bundles, frozen alignments, screenshots, evidence pages, assessments, and audit outputs.
+- Direct DOCX/PDF import or browser upload.
+- Zotero or other reference-manager integration.
+- AI-based evidence verification or automatic factual support judgments.
+- A deployed reviewer service, authentication, persistence, collaboration, or formal sign-off.
+- Production secrets, credentials, or external-service configuration.
+
 ## File Structure
 
 ```text
@@ -235,7 +260,8 @@ diff-aware-claims-checker/
 |- evidence_mentions.py
 |- README.md
 |- docs/
-|  \- checker_improvements_plan.md
+|  |- checker_improvements_plan.md
+|  \- reviewer_interface_user_manual.md
 \- tests/
    |- test_claims_checker.py
    |- test_improvements.py
@@ -251,10 +277,14 @@ diff-aware-claims-checker/
 
 Keep changes small, deterministic, and isolated under `diff-aware-claims-checker/`. Add tests for every automatic classification rule, and route uncertain behavior to human review rather than relaxing suppression safeguards.
 
+## Contact or Ownership
+
+Ownership and review remain with the maintainers of the `Agents` repository and the Diff-Aware Claims Checker project.
+
 ## License
 
 This prototype follows the license and usage terms of the enclosing `Agents` repository; it does not add a separate license.
 
-## Contact
+## Citation
 
-Ownership and review remain with the maintainers of the `Agents` repository and the Diff-Aware Claims Checker project.
+No archival software release or DOI has been assigned. Until one exists, cite the repository, branch, commit SHA, and access date. Do not cite the private reviewer pilot as a public artifact.
