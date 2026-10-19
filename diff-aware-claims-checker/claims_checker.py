@@ -24,6 +24,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from preprocessing import normalize_for_matching, heading_reason, classify_heading
+from evidence_mentions import dependency_schema
+
 
 ACTION_RECHECK = "RECHECK"
 ACTION_HUMAN_REVIEW = "HUMAN_REVIEW"
@@ -70,41 +73,60 @@ class Claim:
     section: str
     paragraph: int
     version: str
+    input_paragraph: int = 0
+    heading_kind: str | None = None
 
     @property
     def location(self) -> dict[str, Any]:
-        return {"section": self.section, "paragraph": self.paragraph}
+        return {"section": self.section, "paragraph": self.paragraph,
+                "input_paragraph": self.input_paragraph}
 
 
 def normalize_text(text: str) -> str:
     """Normalize Unicode and whitespace without erasing substantive punctuation."""
 
-    normalized = unicodedata.normalize("NFKC", text)
-    return " ".join(normalized.split()).casefold()
+    return normalize_for_matching(text)
 
 
 def claim_id_base(text: str) -> str:
     """Return a deterministic content-based identifier for a claim."""
 
-    digest = hashlib.sha256(normalize_text(text).encode("utf-8")).hexdigest()[:10]
+    # Retain existing comparison-local IDs for compatibility; matching uses the
+    # safer key above, never this legacy hash as proof of semantic equivalence.
+    legacy_key = " ".join(unicodedata.normalize("NFKC", text).split()).casefold()
+    digest = hashlib.sha256(legacy_key.encode("utf-8")).hexdigest()[:10]
     return f"C-{digest.upper()}"
 
 
-def extract_claims(text: str, version: str) -> list[Claim]:
-    """Extract non-heading, non-blockquote Markdown paragraphs as claims."""
+def extract_claims(text: str, version: str, *, heading_hints: list[int] | None = None,
+                   excluded_headings: list[dict[str, Any]] | None = None) -> list[Claim]:
+    """Retain factual/uncertain headings; separate closed-list structural context."""
 
-    raw_claims: list[tuple[str, str, int]] = []
+    raw_claims: list[tuple[str, str, int, int, str | None]] = []
+    hints = set(heading_hints or [])
+    input_paragraph = 0
     current_section = "Document"
     paragraph_lines: list[str] = []
     paragraph_number = 0
     in_code_fence = False
 
     def flush_paragraph() -> None:
-        nonlocal paragraph_lines, paragraph_number
+        nonlocal paragraph_lines, paragraph_number, input_paragraph, current_section
         if not paragraph_lines:
             return
-        paragraph_number += 1
-        raw_claims.append((" ".join(paragraph_lines).strip(), current_section, paragraph_number))
+        input_paragraph += 1
+        original = "\n".join(paragraph_lines)
+        reason = heading_reason(original, input_paragraph in hints)
+        if reason:
+            current_section = original.strip()
+            if excluded_headings is not None:
+                excluded_headings.append({'input_paragraph':input_paragraph,'text':original,'reason':reason,'heading_kind':'STRUCTURAL'})
+        else:
+            paragraph_number += 1
+            kind = classify_heading(original) if input_paragraph in hints else None
+            raw_claims.append((original, current_section, paragraph_number, input_paragraph, kind))
+            if kind:
+                current_section = original.strip()
         paragraph_lines = []
 
     for line in text.splitlines():
@@ -118,7 +140,18 @@ def extract_claims(text: str, version: str) -> list[Claim]:
         heading = HEADING_PATTERN.match(stripped)
         if heading:
             flush_paragraph()
-            current_section = heading.group("title").strip()
+            input_paragraph += 1
+            title = heading.group("title").strip()
+            kind = classify_heading(title)
+            if kind == 'STRUCTURAL':
+                if excluded_headings is not None:
+                    excluded_headings.append({'input_paragraph':input_paragraph,'text':title,
+                        'original_markup':line,'reason':'Closed-list structural heading; retained as context.',
+                        'heading_kind':kind})
+            else:
+                paragraph_number += 1
+                raw_claims.append((title,current_section,paragraph_number,input_paragraph,kind))
+            current_section = title
             continue
         if stripped.startswith(">"):
             flush_paragraph()
@@ -126,13 +159,13 @@ def extract_claims(text: str, version: str) -> list[Claim]:
         if not stripped:
             flush_paragraph()
             continue
-        paragraph_lines.append(stripped)
+        paragraph_lines.append(line)
 
     flush_paragraph()
 
     occurrences: Counter[str] = Counter()
     claims: list[Claim] = []
-    for claim_text, section, paragraph in raw_claims:
+    for claim_text, section, paragraph, source_index, heading_kind in raw_claims:
         base = claim_id_base(claim_text)
         occurrences[base] += 1
         suffix = "" if occurrences[base] == 1 else f"-{occurrences[base]}"
@@ -143,6 +176,8 @@ def extract_claims(text: str, version: str) -> list[Claim]:
                 section=section,
                 paragraph=paragraph,
                 version=version,
+                input_paragraph=source_index,
+                heading_kind=heading_kind,
             )
         )
     return claims
@@ -161,7 +196,7 @@ def distinctive_tokens(text: str) -> set[str]:
 
     return {
         token
-        for token in WORD_PATTERN.findall(normalize_text(text))
+        for token in WORD_PATTERN.findall(normalize_text(text).casefold())
         if token not in STOPWORDS and len(token) > 1 and not token.isdigit()
     }
 
@@ -201,7 +236,11 @@ def make_record(
     elif new_claims:
         new_text = [claim.text for claim in new_claims]
 
+    components = [{'claim_id':c.claim_id,'version':c.version,'text':c.text,'location':c.location,'heading_kind':c.heading_kind}
+                  for c in old_claims + new_claims]
+    record_key = json.dumps([(c.version,c.input_paragraph,c.text) for c in old_claims+new_claims], ensure_ascii=False)
     return {
+        "review_record_id": "R-" + hashlib.sha256(record_key.encode('utf-8')).hexdigest()[:14],
         "claim_id": claim_id,
         "old_text": old_text,
         "new_text": new_text,
@@ -213,6 +252,8 @@ def make_record(
         "action": action,
         "dependencies": {"old": [], "new": []},
         "reason": reason,
+        "source_components": components,
+        "verification_status": "UNVERIFIED",
     }
 
 
@@ -317,6 +358,7 @@ def compare_claims(
     """Compare two extracted claim lists using deterministic rules."""
 
     records: list[dict[str, Any]] = []
+    groups: list[dict[str, Any]] = []
     unmatched_old = set(range(len(old_claims)))
     unmatched_new = set(range(len(new_claims)))
 
@@ -337,13 +379,16 @@ def compare_claims(
                 if relation == "MOVED"
                 else "Claim text is unchanged."
             )
+            formatting_only = old_claim.text != new_claim.text
+            if formatting_only:
+                reason += " Only documented spacing/typographic normalization differs; originals retained."
             records.append(
                 make_record(
                     claim_id=old_claim.claim_id,
                     old_claims=[old_claim],
                     new_claims=[new_claim],
                     relation=relation,
-                    trigger="NONE",
+                    trigger="STYLISTIC" if formatting_only else "NONE",
                     action=ACTION_SUPPRESSED,
                     reason=reason,
                 )
@@ -414,8 +459,7 @@ def compare_claims(
                 "no semantic classification was attempted."
             )
             claim_id = grouped_old[0].claim_id
-        records.append(
-            make_record(
+        parent = make_record(
                 claim_id=claim_id,
                 old_claims=grouped_old,
                 new_claims=grouped_new,
@@ -424,7 +468,31 @@ def compare_claims(
                 action=ACTION_HUMAN_REVIEW,
                 reason=reason,
             )
-        )
+        if len(grouped_old) == 1 and len(grouped_new) == 1:
+            records.append(parent)
+        else:
+            parent['group_id'] = claim_id
+            parent['old_locations'] = [c.location for c in grouped_old]
+            parent['new_locations'] = [c.location for c in grouped_new]
+            parent['child_review_record_ids'] = []
+            children = []
+            for side, members in [('old',grouped_old),('new',grouped_new)]:
+                for member in members:
+                    child = make_record(claim_id=member.claim_id,
+                        old_claims=[member] if side=='old' else [],
+                        new_claims=[member] if side=='new' else [],
+                        relation='UNCERTAIN',trigger='UNCERTAIN',action=ACTION_HUMAN_REVIEW,
+                        reason=reason+' This is one '+side+' paragraph component; no individual counterpart is asserted.')
+                    child.update({'parent_group_id':claim_id,'parent_group_review_record_id':parent['review_record_id'],
+                        'component_side':side,'provenance':{'method':'ambiguous_component_expansion',
+                        'semantic_identity_established':False,'parent_reason':reason}})
+                    children.append(child)
+                    parent['child_review_record_ids'].append(child['review_record_id'])
+            for child in children:
+                child['candidate_counterpart_record_ids'] = [other['review_record_id'] for other in children
+                    if other['component_side'] != child['component_side']]
+            groups.append(parent)
+            records.extend(children)
         unmatched_old.difference_update(old_group)
         unmatched_new.difference_update(new_group)
 
@@ -482,6 +550,8 @@ def compare_claims(
             "deleted_archived": counts[ACTION_DELETED_ARCHIVED],
         },
         "results": records,
+        "groups": groups,
+        "dependency_schema": dependency_schema(old_claims,new_claims,records),
     }
 
 
@@ -491,15 +561,71 @@ def compare_texts(
     *,
     old_dependencies: dict[str, Any] | None = None,
     new_dependencies: dict[str, Any] | None = None,
+    old_heading_hints: list[int] | None = None,
+    new_heading_hints: list[int] | None = None,
 ) -> dict[str, Any]:
     """Extract and compare claims from two manuscript strings."""
 
-    return compare_claims(
-        extract_claims(old_text, "v1"),
-        extract_claims(new_text, "v2"),
+    excluded_old: list[dict[str, Any]] = []
+    excluded_new: list[dict[str, Any]] = []
+    old_claims = extract_claims(old_text, 'v1', heading_hints=old_heading_hints, excluded_headings=excluded_old)
+    new_claims = extract_claims(new_text, 'v2', heading_hints=new_heading_hints, excluded_headings=excluded_new)
+    report = compare_claims(
+        old_claims, new_claims,
         old_dependencies=old_dependencies,
         new_dependencies=new_dependencies,
     )
+    # Context comparison uses only exact heading labels, never guessed alignment.
+    headings = {'v1': excluded_old + [{'text':c.text,'input_paragraph':c.input_paragraph,
+        'heading_kind':c.heading_kind} for c in old_claims if c.heading_kind],
+        'v2': excluded_new + [{'text':c.text,'input_paragraph':c.input_paragraph,
+        'heading_kind':c.heading_kind} for c in new_claims if c.heading_kind]}
+    labels = {v:{normalize_text(h['text']).casefold() for h in hs} for v,hs in headings.items()}
+    context_items = []
+    for version, hs in (('v1',excluded_old),('v2',excluded_new)):
+        opposite = 'v2' if version == 'v1' else 'v1'
+        for h in hs:
+            item = dict(h, version=version, verification_status='UNVERIFIED')
+            item['context_id'] = f"CTX-{version}-{h['input_paragraph']}"
+            changed = normalize_text(h['text']).casefold() not in labels[opposite]
+            item['action'] = ACTION_HUMAN_REVIEW if changed else ACTION_SUPPRESSED
+            item['reason'] = ('Structural label added/removed: inspect scope and downstream interpretation; no counterpart inferred.'
+                if changed else 'Unchanged closed-list structural context, not a verified claim.')
+            context_items.append(item)
+            if changed:
+                c = Claim(item['context_id'],h['text'],h['text'],0,version,h['input_paragraph'],'STRUCTURAL')
+                record = make_record(claim_id=c.claim_id,old_claims=[c] if version=='v1' else [],
+                    new_claims=[c] if version=='v2' else [],relation='UNCERTAIN',trigger='HEADING_SCOPE_CHANGED',
+                    action=ACTION_HUMAN_REVIEW,reason=item['reason'])
+                record['is_structural_context'] = True
+                (old_claims if version=='v1' else new_claims).append(c)
+                item['review_record_id'] = record['review_record_id']
+                report['results'].append(record)
+    for r in report['results']:
+        heading_components = [c for c in r['source_components'] if c.get('heading_kind')]
+        if heading_components:
+            r['heading_components'] = heading_components
+            if r['match_relation'] not in ('SAME','MOVED') or r['action'] == ACTION_DELETED_ARCHIVED:
+                r['action'] = ACTION_HUMAN_REVIEW
+                r['review_trigger'] = 'HEADING_SCOPE_CHANGED'
+                r['reason'] += ' Heading may contain a claim or alter downstream scope; inspect in context.'
+        a,b = r.get('old_location'), r.get('new_location')
+        if a and b and a['section'] != b['section']:
+            shared = labels['v1'] & labels['v2']
+            if any(normalize_text(loc['section']).casefold() not in shared for loc in (a,b)):
+                if r['action'] == ACTION_SUPPRESSED:
+                    r['action'] = ACTION_HUMAN_REVIEW
+                    r['review_trigger'] = 'HEADING_SCOPE_CHANGED'
+                    r['reason'] += ' Section context changed; unchanged wording may have a different scope.'
+    counts = Counter(r['action'] for r in report['results'])
+    report['summary'] = {k:counts[a] for k,a in [('recheck',ACTION_RECHECK),('human_review',ACTION_HUMAN_REVIEW),
+        ('suppressed',ACTION_SUPPRESSED),('deleted_archived',ACTION_DELETED_ARCHIVED)]}
+    report['context_items'] = context_items
+    # Include changed structural context and refresh final routed actions.
+    report['dependency_schema'] = dependency_schema(old_claims,new_claims,report['results'])
+    report['preprocessing'] = {'excluded_headings':{'old':excluded_old,'new':excluded_new},
+        'original_text_preserved':True,'normalization':'NFC, whitespace, typographic quotes, soft hyphen, narrow article spacing repair'}
+    return report
 
 
 def load_dependency_map(path: Path | None) -> dict[str, Any]:
@@ -540,7 +666,12 @@ def render_review_queue(report: dict[str, Any]) -> str:
             lines.append("- (none)")
         for record in matching:
             text = record["new_text"] if record["new_text"] is not None else record["old_text"]
-            lines.append(f"- [{record['claim_id']}] {display_text(text)}")
+            lines.append(f"- [{record['review_record_id']}; {record['claim_id']}] {display_text(text)}")
+            if record.get('parent_group_id'):
+                lines.append(f"  parent group: {record['parent_group_id']}; component: {record['component_side']}; counterpart unresolved")
+            location = record['new_location'] or record['old_location']
+            if location:
+                lines.append(f"  location: {location}")
             lines.append(f"  relation: {record['match_relation']}")
             if record["review_trigger"] is not None:
                 lines.append(f"  trigger: {record['review_trigger']}")
@@ -558,6 +689,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--old-dependencies", type=Path)
     parser.add_argument("--new-dependencies", type=Path)
     parser.add_argument("--json-out", type=Path)
+    parser.add_argument("--heading-hints", type=Path, help="Optional JSON old/new source-paragraph heading-index lists.")
     return parser.parse_args(argv)
 
 
@@ -566,11 +698,19 @@ def main(argv: list[str] | None = None) -> int:
     try:
         old_text = args.old_manuscript.read_text(encoding="utf-8")
         new_text = args.new_manuscript.read_text(encoding="utf-8")
+        hints = json.loads(args.heading_hints.read_text(encoding='utf-8')) if args.heading_hints else {}
+        if not isinstance(hints,dict):
+            raise ValueError('Heading hints must be a JSON object with old/new lists.')
+        for side in ('old','new'):
+            values = hints.get(side,[])
+            if not isinstance(values,list) or any(type(v) is not int or v < 1 for v in values):
+                raise ValueError('Heading hints must contain positive integer old/new lists.')
         report = compare_texts(
             old_text,
             new_text,
             old_dependencies=load_dependency_map(args.old_dependencies),
             new_dependencies=load_dependency_map(args.new_dependencies),
+            old_heading_hints=hints.get('old',[]),new_heading_hints=hints.get('new',[]),
         )
         if args.json_out:
             args.json_out.write_text(
