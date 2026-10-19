@@ -279,11 +279,13 @@ Keep changes small, deterministic, and isolated under `diff-aware-claims-checker
 
 ## Contact or Ownership
 
-Ownership and review remain with the maintainers of the `Agents` repository and the Diff-Aware Claims Checker project.
+- Repository owner: `Aqr-Ives/Agents`
+- Branch maintainer and project contact: Dongwei Liu
+- Final review and acceptance remain with the `Agents` repository maintainers.
 
 ## License
 
-This prototype follows the license and usage terms of the enclosing `Agents` repository; it does not add a separate license.
+No license file was present at the repository root when this README was reviewed on 2026-10-19. Do not assume redistribution or reuse rights beyond the access already granted. The repository owner should add an explicit license before broader reuse or release.
 
 ## Citation
 
