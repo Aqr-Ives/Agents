@@ -202,8 +202,10 @@ def distinctive_tokens(text: str) -> set[str]:
 
 
 def has_ambiguous_overlap(old_text: str, new_text: str) -> bool:
-    """Conservatively identify related unmatched text for human review."""
+    """Connect residual exact duplicates or lexical overlap for human review."""
 
+    if normalize_text(old_text) == normalize_text(new_text):
+        return True
     old_tokens = distinctive_tokens(old_text)
     new_tokens = distinctive_tokens(new_text)
     if not old_tokens or not new_tokens:
@@ -301,6 +303,30 @@ def ambiguous_components(
     return components
 
 
+def exact_pairs(old_claims: list[Claim], new_claims: list[Claim],
+                old_indices: list[int], new_indices: list[int]) -> list[tuple[int, int]]:
+    """Prefer unique section occurrences; never resolve duplicate ties by order."""
+
+    remaining_old = set(old_indices)
+    remaining_new = set(new_indices)
+    old_sections: dict[str, list[int]] = defaultdict(list)
+    new_sections: dict[str, list[int]] = defaultdict(list)
+    for index in old_indices:
+        old_sections[normalize_text(old_claims[index].section).casefold()].append(index)
+    for index in new_indices:
+        new_sections[normalize_text(new_claims[index].section).casefold()].append(index)
+    pairs = []
+    for section in sorted(old_sections.keys() & new_sections.keys()):
+        if len(old_sections[section]) == len(new_sections[section]) == 1:
+            old_index, new_index = old_sections[section][0], new_sections[section][0]
+            pairs.append((old_index, new_index))
+            remaining_old.remove(old_index)
+            remaining_new.remove(new_index)
+    if len(remaining_old) == len(remaining_new) == 1:
+        pairs.append((next(iter(remaining_old)), next(iter(remaining_new))))
+    return sorted(pairs)
+
+
 def canonical_dependencies(value: Any) -> list[Any]:
     """Normalize dependency ordering so metadata order alone is not a change."""
 
@@ -370,7 +396,8 @@ def compare_claims(
         new_exact[normalize_text(claim.text)].append(index)
 
     for normalized in sorted(old_exact.keys() & new_exact.keys()):
-        for old_index, new_index in zip(old_exact[normalized], new_exact[normalized]):
+        pairs = exact_pairs(old_claims, new_claims, old_exact[normalized], new_exact[normalized])
+        for old_index, new_index in pairs:
             old_claim = old_claims[old_index]
             new_claim = new_claims[new_index]
             relation = "MOVED" if old_claim.section != new_claim.section else "SAME"
@@ -379,6 +406,8 @@ def compare_claims(
                 if relation == "MOVED"
                 else "Claim text is unchanged."
             )
+            if len(old_exact[normalized]) > 1 or len(new_exact[normalized]) > 1:
+                reason += " Duplicate occurrence linked by unique section context or a unique remaining pair."
             formatting_only = old_claim.text != new_claim.text
             if formatting_only:
                 reason += " Only documented spacing/typographic normalization differs; originals retained."
@@ -441,7 +470,13 @@ def compare_claims(
     ):
         grouped_old = [old_claims[index] for index in old_group]
         grouped_new = [new_claims[index] for index in new_group]
-        if len(grouped_old) == 1 and len(grouped_new) > 1:
+        if len({normalize_text(c.text) for c in grouped_old + grouped_new}) == 1:
+            reason = (
+                "Repeated identical paragraph text has multiple possible occurrences; "
+                "occurrence correspondence requires human judgment."
+            )
+            claim_id = grouped_old[0].claim_id
+        elif len(grouped_old) == 1 and len(grouped_new) > 1:
             reason = (
                 "Possible split detected from shared distinctive words; "
                 "split identity and review need require human judgment."
@@ -490,7 +525,8 @@ def compare_claims(
                     parent['child_review_record_ids'].append(child['review_record_id'])
             for child in children:
                 child['candidate_counterpart_record_ids'] = [other['review_record_id'] for other in children
-                    if other['component_side'] != child['component_side']]
+                    if other['component_side'] != child['component_side'] and has_ambiguous_overlap(
+                        child['source_components'][0]['text'], other['source_components'][0]['text'])]
             groups.append(parent)
             records.extend(children)
         unmatched_old.difference_update(old_group)

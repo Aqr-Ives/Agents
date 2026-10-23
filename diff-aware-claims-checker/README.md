@@ -107,6 +107,14 @@ python -B -m unittest discover -s .\diff-aware-claims-checker\tests -p "test_*.p
 
 The tests cover specification-backed labels, conservative ambiguity handling, dependency overrides, dependency ordering, human-readable output, and JSON output.
 
+Goal 2 validation on 2026-10-21: the full checker suite passes 51 tests,
+including the existing CLI test that writes JSON into a temporary directory.
+Twenty new tests cover direct/transitive candidate links, duplicate occurrence
+ties and section changes, bounded author-year extraction, exact source spans,
+statistical interval guards, and preserved dependency/verification behavior.
+The focused scope and validation checklist are in the
+[Goal 2 implementation plan](docs/goal2_implementation_plan.md).
+
 Current-branch verification on 2026-10-19 reran all 31 checker tests successfully
 and reran the synthetic CLI example successfully. The branch's recorded validation
 also reports 10 repository validation-tool tests and 7 repository documentation
@@ -165,6 +173,7 @@ For identical manuscripts and dependency JSON, the checker produces deterministi
 - Section changes are detected, but fine-grained within-section movement is not classified.
 - Token overlap is not a semantic matcher. It is used only to avoid silently classifying possibly related text as unrelated additions/deletions.
 - Split and merge identity remains unresolved and requires a person.
+- Repeated identical paragraphs without unique section/occurrence support remain in human review, even if their wording is unchanged. Section context is a heuristic, not semantic identity.
 - Content-hash IDs are deterministic for the inputs, but durable identity across a long chain of rewritten versions will require a persistent ledger.
 - The checker creates a review queue; it does not verify whether a claim is true or supported.
 
@@ -192,6 +201,20 @@ Multi-paragraph ambiguity now appears as one-sided child review records in
 `results`, with unique `review_record_id`, `parent_group_id`, original locations,
 candidate counterpart IDs, and HUMAN_REVIEW routing. Original parent context is
 stored in `groups`. Child records do not invent one-to-one or semantic identity.
+Each child's candidate list now contains only directly supported lexical
+relationships. Connected group membership alone no longer adds a counterpart
+link; the complete group remains available as broader context. Residual exact
+duplicate text also supplies a direct candidate relationship, including short
+text that lacks enough distinct words for the ordinary overlap threshold.
+
+Exact duplicate occurrences are matched first where their normalized section
+occurs exactly once on each side for that text. A unique remaining old/new pair
+may then be linked, including a move. Remaining ties are not paired by paragraph
+order: they enter the existing ambiguity groups with `HUMAN_REVIEW` routing.
+This can increase leaf counts: two indistinguishable occurrences on both sides
+now yield four one-sided review records rather than two arbitrarily paired
+suppressed records. Group context and each occurrence's location are retained.
+
 Summary counts describe leaf records, not both leaves and parent groups. Thus
 the synthetic fixture has seven paragraph HUMAN_REVIEW records rather than
 three bundled records, plus two newly retained uncertain-heading review records.
@@ -203,6 +226,19 @@ Edges. Explicit mentions support:
 - Figure 2, Fig. S9, Figure 2A, and simple figure lists.
 - Reference 40, References 40 and 41.
 - [12], [12, 13], [12–14] and bounded ascending numeric ranges.
+- (Smith, 2023), (Smith & Lee, 2021), and Smith et al. (2022).
+- Semicolon groups such as (Smith, 2022; Jones, 2023).
+- Lowercase year suffixes, for example (Smith, 2023a).
+
+Author-year support is deliberately bounded to one surname, two surnames joined
+by `&`/`and`, or a surname followed by `et al.`; years are 1900–2099 with an
+optional lowercase suffix. Parenthetical forms require the author/year comma;
+narrative forms place the year in parentheses. Common Latin accented, hyphenated,
+and apostrophe surnames are accepted. Full author lists, initials, and surname
+particles are not reconstructed; a supported-looking surname/year substring
+in more complex narrative prose may still be detected. Repeated-year shorthand
+and `n.d.` are unsupported.
+Every member of a semicolon group must satisfy the supported syntax.
 
 Occurrence text, paragraph location, character spans, and extraction provenance
 are retained. Label-based evidence IDs are explicitly unresolved and scoped to
@@ -210,12 +246,25 @@ one manuscript version; they are not persistent external source identities.
 Source identity, source version, content hash, and fine-grained evidence locator
 remain null. All extracted edges are `unknown` / `NOT_CHECKED`; every Claim
 Version remains `UNVERIFIED`. Extraction never establishes evidence support.
+For a parenthetical citation group, each mention retains the whole group's
+exact source span, just as numeric citation-list members share one span.
+Narrative mentions retain their complete author/year expression. The existing
+`pattern` provenance distinguishes these forms, and the string `label_token`
+holds the author-year label instead of a numeric reference label. Evidence IDs
+remain manuscript/version scoped; these labels are not bibliography identities.
 
-Unsupported forms include author-year citations, bare/superscript/EndNote
+Unsupported forms include bare/superscript/EndNote and parenthesized numeric
 numbers, written-out labels, named table/figure ranges, nested parentheses and
 complex cross-reference syntax. Bracket ranges exceeding 50 labels are skipped.
 Potentially syntactic mentions still need reviewer interpretation.
-Numeric bracket syntax may also represent intervals; extraction alone cannot
+
+Two-bound numeric brackets immediately introduced by `CI` or `confidence
+interval` (optionally followed by `was`, `were`, `is`, `of`, `:` or `=`) are
+skipped: `The 95% CI was [12, 14]` is not extracted as references. This narrow
+guard does not discard brackets merely because confidence intervals are
+discussed nearby: `confidence interval methods [12, 14]` remains extractable,
+as does a later `see [15]`. Unlabelled intervals, unusual statistical syntax,
+and other non-citation uses of brackets remain ambiguous. Extraction cannot
 establish that a detected label is a citation or identify its source.
 
 On Windows consoles using a legacy encoding, set `PYTHONUTF8=1` for Unicode
@@ -261,10 +310,12 @@ diff-aware-claims-checker/
 |- README.md
 |- docs/
 |  |- checker_improvements_plan.md
+|  |- goal2_implementation_plan.md
 |  \- reviewer_interface_user_manual.md
 \- tests/
    |- test_claims_checker.py
    |- test_improvements.py
+   |- test_goal2.py
    \- fixtures/candidate_v0/
 ```
 

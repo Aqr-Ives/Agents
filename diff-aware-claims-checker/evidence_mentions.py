@@ -14,6 +14,26 @@ NAMED = re.compile(r'\b(?P<kind>Tables?|Figures?|Figs?\.?|References?)\s+'
     r'(?P<labels>'+LABEL+r'(?:(?:\s*,\s*(?:and\s+)?|\s+and\s+|\s*&\s*)'+LABEL+r')*)'
     r'(?!\w|\.\d)', re.IGNORECASE)
 BRACKET = re.compile(r'\[(?P<labels>\d+(?:\s*(?:,|[-\u2013])\s*\d+)*)\]')
+SURNAME = r"[A-ZÀ-ÖØ-Þ][^\W\d_]*(?:[-'’][^\W\d_]+)*"
+AUTHORS = SURNAME + r'(?:(?:\s*&\s*|\s+and\s+)' + SURNAME + r'|\s+et\s+al\.)?'
+YEAR = r'(?:19|20)\d{2}[a-z]?'
+AUTHOR_YEAR = re.compile(r'(?P<authors>' + AUTHORS + r')\s*,\s*(?P<year>' + YEAR + r')')
+PARENTHETICAL = re.compile(r'\((?P<body>[^()]*)\)')
+NARRATIVE = re.compile(r"(?<![\w'’\-])(?P<authors>" + AUTHORS +
+    r')\s+\((?P<year>' + YEAR + r')\)')
+INTERVAL_BOUNDS = re.compile(r'\d+\s*(?:,|[-\u2013])\s*\d+')
+INTERVAL_PREFIX = re.compile(
+    r'\b(?:CI|confidence\s+interval)\s*(?:(?:was|were|is|of)\s*)?[:=]?\s*$', re.IGNORECASE)
+
+
+def author_year_mention(match, authors: str, year: str, pattern: str) -> dict:
+    """Keep the full citation expression span, as for numeric citation lists."""
+    authors = ' '.join(authors.split())
+    authors = re.sub(r'\s*&\s*|\s+and\s+', ' & ', authors)
+    label = authors + ' (' + year + ')'
+    return {'evidence_type':'REFERENCE', 'original_text':match.group(0),
+        'normalized_label':label, 'label_token':label,
+        'char_start':match.start(), 'char_end':match.end(), 'pattern':pattern}
 
 
 def extract_mentions(text: str) -> list[dict]:
@@ -33,6 +53,11 @@ def extract_mentions(text: str) -> list[dict]:
                 'normalized_label':prefix+' '+label.upper(), 'label_token':label.upper(),
                 'char_start':match.start(), 'char_end':match.end(), 'pattern':'named_label_list'})
     for match in BRACKET.finditer(text):
+        # Only two-bound brackets immediately after an explicit interval label.
+        # Nearby statistical discussion alone must not discard numeric citations.
+        if (INTERVAL_BOUNDS.fullmatch(match.group('labels')) and
+                INTERVAL_PREFIX.search(text[:match.start()])):
+            continue
         labels=[]; valid=True
         for part in match.group('labels').split(','):
             bounds=re.split(r'[-\u2013]',part.strip())
@@ -45,6 +70,15 @@ def extract_mentions(text: str) -> list[dict]:
                 result.append({'evidence_type':'REFERENCE', 'original_text':match.group(0),
                     'normalized_label':'Reference '+label, 'label_token':label,
                     'char_start':match.start(), 'char_end':match.end(), 'pattern':'bracket_numeric_list_or_range'})
+    for match in PARENTHETICAL.finditer(text):
+        members = [AUTHOR_YEAR.fullmatch(part.strip()) for part in match.group('body').split(';')]
+        if all(members):
+            for member in members:
+                result.append(author_year_mention(match, member.group('authors'),
+                    member.group('year'), 'parenthetical_author_year'))
+    for match in NARRATIVE.finditer(text):
+        result.append(author_year_mention(match, match.group('authors'),
+            match.group('year'), 'narrative_author_year'))
     return sorted(result,key=lambda m:(m['char_start'],m['char_end']))
 
 
